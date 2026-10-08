@@ -1,0 +1,42 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Мониторинг самого Prometheus
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Мониторинг приложения DeviceTelemetryService
+  - job_name: 'device-telemetry-service'
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+    static_configs:
+      - targets: ['host.docker.internal:5000']
+        labels:
+          service: 'device-telemetry-api'
+
+  # Мониторинг TimescaleDB (через postgres_exporter)
+  - job_name: 'timescaledb'
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['timescaledb:9187']
+        labels:
+          service: 'timescaledb'
+
+  # Мониторинг RabbitMQ
+  - job_name: 'rabbitmq'
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['rabbitmq:15692']
+        labels:
+          service: 'rabbitmq'
+
+  # Мониторинг Redis
+  - job_name: 'redis'
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['redis:9121']
+        labels:
+          service: 'redis'
