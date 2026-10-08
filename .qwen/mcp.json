@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "device-telemetry-orchestrator": {
+      "command": "node",
+      "args": ["C:\\Users\\diman\\.qwen\\mcp-servers\\device-telemetry-orchestrator\\index.js"],
+      "env": {
+        "PROJECT_ROOT": "D:\\Net Core\\DeviceTelemetryService"
+      },
+      "disabled": false,
+      "alwaysAllow": ["get_agents", "get_agent_info"],
+      "description": "Lead Orchestrator & Fast Coder - прием задач, быстрая кодогенерация CRUD, DTO, контроллеров"
+    }
+  }
+}
