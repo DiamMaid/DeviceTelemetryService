@@ -6,4 +6,13 @@
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="src\Application\Application.csproj" />
+    <ProjectReference Include="src\Infrastructure\Infrastructure.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Remove="src\**\*.cs" />
+  </ItemGroup>
+
 </Project>
