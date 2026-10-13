@@ -1,6 +1,5 @@
 using Domain.Interfaces;
 using Domain.Entities;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Infrastructure.Persistence;
 using Dapper;
@@ -8,41 +7,26 @@ using Npgsql;
 
 namespace Infrastructure.Persistence.Repositories;
 
-/// <summary>
-/// Реализация репозитория телеметрии через EF Core и Dapper.
-/// </summary>
 public class TelemetryRepository : ITelemetryReader, ITelemetryWriter
 {
-    private readonly ApplicationDbContext _context;
     private readonly string _connectionString;
 
-    /// <summary>
-    /// Создает новый экземпляр репозитория телеметрии.
-    /// </summary>
-    /// <param name="context">EF Core контекст для операций чтения.</param>
-    /// <param name="configuration">Конфигурация для получения строки подключения.</param>
-    public TelemetryRepository(ApplicationDbContext context, IConfiguration configuration)
+    public TelemetryRepository(IConfiguration configuration)
     {
-        _context = context ?? throw new ArgumentNullException(nameof(context));
-        _connectionString = configuration.GetConnectionString("DefaultConnection") 
+        _connectionString = configuration.GetConnectionString("DefaultConnection")
             ?? throw new InvalidOperationException("Connection string 'DefaultConnection' not found");
+
+        // Настраиваем маппинг Dapper для snake_case колонок
+        DefaultTypeMap.MatchNamesWithUnderscores = true;
     }
 
-    // === ITelemetryReader методы (EF Core) ===
-
-    /// <summary>
-    /// Получает данные телеметрии по уникальному идентификатору.
-    /// </summary>
     public async Task<TelemetryData?> GetByIdAsync(Guid id)
     {
-        return await _context.TelemetryData
-            .AsNoTracking()
-            .FirstOrDefaultAsync(t => t.Id == id);
+        using var connection = new NpgsqlConnection(_connectionString);
+        const string sql = "SELECT * FROM telemetry_data WHERE id = @Id LIMIT 1";
+        return await connection.QueryFirstOrDefaultAsync<TelemetryData>(sql, new { Id = id });
     }
 
-    /// <summary>
-    /// Получает последние N записей телеметрии для устройства.
-    /// </summary>
     public async Task<List<TelemetryData>> GetLatestForDeviceAsync(Guid deviceId, int count)
     {
         if (deviceId == Guid.Empty)
@@ -54,17 +38,24 @@ public class TelemetryRepository : ITelemetryReader, ITelemetryWriter
         if (count > maxCount)
             throw new ArgumentOutOfRangeException(nameof(count), $"Count cannot exceed {maxCount}");
 
-        return await _context.TelemetryData
-            .AsNoTracking()
-            .Where(t => t.DeviceId == deviceId)
-            .OrderByDescending(t => t.Timestamp)
-            .Take(count)
-            .ToListAsync();
+        using var connection = new NpgsqlConnection(_connectionString);
+        const string sql = @"
+            SELECT 
+                device_id::uuid AS DeviceId,
+                time AS Timestamp,
+                metric_name AS MetricName,
+                metric_value AS MetricValue,
+                unit AS Unit,
+                tags AS Metadata,
+                created_at AS ReceivedAt
+            FROM telemetry_data 
+            WHERE device_id = @DeviceId::text 
+            ORDER BY time DESC 
+            LIMIT @Count";
+        
+        return (await connection.QueryAsync<TelemetryData>(sql, new { DeviceId = deviceId.ToString(), Count = count })).ToList();
     }
 
-    /// <summary>
-    /// Получает данные телеметрии за указанный период для устройства.
-    /// </summary>
     public async Task<List<TelemetryData>> GetByTimeRangeAsync(
         Guid deviceId, 
         DateTime startTime, 
@@ -75,18 +66,23 @@ public class TelemetryRepository : ITelemetryReader, ITelemetryWriter
         if (startTime > endTime)
             throw new ArgumentException("Start time must be before end time", nameof(startTime));
 
-        return await _context.TelemetryData
-            .AsNoTracking()
-            .Where(t => t.DeviceId == deviceId && 
-                       t.Timestamp >= startTime && 
-                       t.Timestamp <= endTime)
-            .OrderBy(t => t.Timestamp)
-            .ToListAsync();
+        using var connection = new NpgsqlConnection(_connectionString);
+        const string sql = @"
+            SELECT 
+                device_id::uuid AS DeviceId,
+                time AS Timestamp,
+                metric_name AS MetricName,
+                metric_value AS MetricValue,
+                unit AS Unit,
+                tags AS Metadata,
+                created_at AS ReceivedAt
+            FROM telemetry_data 
+            WHERE device_id = @DeviceId::text AND time >= @StartTime AND time <= @EndTime 
+            ORDER BY time ASC";
+        
+        return (await connection.QueryAsync<TelemetryData>(sql, new { DeviceId = deviceId.ToString(), StartTime = startTime, EndTime = endTime })).ToList();
     }
 
-    /// <summary>
-    /// Получает агрегированные данные (среднее, мин, макс) за период.
-    /// </summary>
     public async Task<Dictionary<string, (double Avg, double Min, double Max)>> GetAggregatedAsync(
         Guid deviceId,
         DateTime startTime,
@@ -97,33 +93,25 @@ public class TelemetryRepository : ITelemetryReader, ITelemetryWriter
         if (startTime > endTime)
             throw new ArgumentException("Start time must be before end time", nameof(startTime));
 
-        var results = await _context.TelemetryData
-            .AsNoTracking()
-            .Where(t => t.DeviceId == deviceId && 
-                       t.Timestamp >= startTime && 
-                       t.Timestamp <= endTime)
-            .GroupBy(t => t.MetricName)
-            .Select(g => new 
-            {
-                MetricName = g.Key,
-                Avg = g.Average(x => x.MetricValue),
-                Min = g.Min(x => x.MetricValue),
-                Max = g.Max(x => x.MetricValue)
-            })
-            .ToListAsync();
+        using var connection = new NpgsqlConnection(_connectionString);
+        const string sql = @"
+            SELECT metric_name, 
+                   AVG(metric_value) AS avg, 
+                   MIN(metric_value) AS min, 
+                   MAX(metric_value) AS max 
+            FROM telemetry_data 
+            WHERE device_id = @DeviceId::text AND time >= @StartTime AND time <= @EndTime 
+            GROUP BY metric_name";
 
+        var results = await connection.QueryAsync<dynamic>(sql, new { DeviceId = deviceId.ToString(), StartTime = startTime, EndTime = endTime });
+        
         return results.ToDictionary(
-            r => r.MetricName,
-            r => (r.Avg, r.Min, r.Max),
+            r => (string)r.metric_name,
+            r => ((double)r.avg, (double)r.min, (double)r.max),
             StringComparer.OrdinalIgnoreCase
         );
     }
 
-    // === ITelemetryWriter методы (Dapper) ===
-
-    /// <summary>
-    /// Сохраняет пакет данных телеметрии (батчинг через Dapper).
-    /// </summary>
     public async Task SaveBatchAsync(IEnumerable<TelemetryData> telemetryDataList)
     {
         if (telemetryDataList == null)
@@ -153,9 +141,6 @@ public class TelemetryRepository : ITelemetryReader, ITelemetryWriter
         }
     }
 
-    /// <summary>
-    /// Сохраняет одну запись телеметрии.
-    /// </summary>
     public async Task SaveAsync(TelemetryData telemetryData)
     {
         if (telemetryData == null)
@@ -171,9 +156,6 @@ public class TelemetryRepository : ITelemetryReader, ITelemetryWriter
         await connection.ExecuteAsync(sql, telemetryData);
     }
 
-    /// <summary>
-    /// Удаляет старые данные телеметрии (политика хранения).
-    /// </summary>
     public async Task DeleteOlderThanAsync(DateTime cutoffDate)
     {
         using var connection = new NpgsqlConnection(_connectionString);
